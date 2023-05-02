@@ -60,14 +60,14 @@ fn process_frame(frame: &mut Mat, feats: &mut Mat) -> opencv::Result<()> {
 		draw_circle(frame, point)?;
 	}
 
-	opencv::highgui::imshow("video", frame)?;
+	opencv::highgui::imshow("rustslam", frame)?;
 	opencv::highgui::wait_key(400)?;
 	Ok(())
 }
 
 fn draw_circle(frame: &mut Mat, center: Point_<i32>) -> opencv::Result<()> {
     let color = Scalar::new(0.0, 255.0, 0.0, 0.0);
-    let radius = 3;
+    let radius = 2;
     circle(frame, center, radius, color, 1, 8, 0)?;
 	Ok(())
 }
