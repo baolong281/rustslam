@@ -1,16 +1,14 @@
 mod extractor;
 use extractor::Extractor;
-use opencv::core::Point;
-use opencv::core::Point_;
-use opencv::core::Scalar;
-use opencv::imgproc::circle;
+use opencv::core::*;
 use std::env;
 use std::process;
 use std::path::Path;
 use opencv::prelude::*;
+use opencv::features2d;
 use opencv::{videoio::{
 	VideoCapture, 
-	CAP_ANY}, prelude::Mat};
+	CAP_ANY}, };
 
 fn main() {
 	let path = env::args()
@@ -27,7 +25,10 @@ fn main() {
 	let mut capture = VideoCapture::from_file(&path, CAP_ANY ).unwrap();
 
 	let mut frame = Mat::default();
-	let ext = Extractor::new();
+	let mut ext = Extractor::new().unwrap_or_else(|e| {
+		println!("{}", e);
+		process::exit(1);
+	});
 
 	loop {
 		capture.read(&mut frame).unwrap();
@@ -35,42 +36,33 @@ fn main() {
 				break;
 		}
 
-		let mut feats = ext.extract(frame.clone())
+		process_frame(&mut frame, &mut ext)
 			.unwrap_or_else(|e| {
 				println!("{}", e);
 				process::exit(1);
 			});
 
-		process_frame(&mut frame, &mut feats)
-			.unwrap_or_else(|e| {
-				println!("{}", e);
-				process::exit(1);
-			});
 		}
+	process::exit(1); 
 }
 
-fn process_frame(frame: &mut Mat, feats: &mut Mat) -> opencv::Result<()> {
+fn process_frame(frame: &mut Mat, ext: &mut Extractor) -> opencv::Result<()> {
+	let mut img = Mat::default();
+	let (last_img, last_kps, last_desc) = ext.get_last();
 
-	let feature_size = feats.rows();
-	println!("FEATS SIZE: {feature_size}");
+	ext.extract(frame.clone())
+		.unwrap_or_else(|e| {
+			println!("{}", e);
+			process::exit(1);
+		});
 
-	for i in 0..feature_size {
-		let b =  feats.at_nd::<Point_<f32>>(&[i, 0])?;
-		let point: Point_<i32> = Point::new(b.x as i32, b.y as i32);
-		draw_circle(frame, point)?;
-	}
+	//features2d::draw_matches(last_img, last_kps, );
 
-	opencv::highgui::imshow("rustslam", frame)?;
+	opencv::highgui::imshow("rustslam", &img)?;
 	opencv::highgui::wait_key(400)?;
 	Ok(())
 }
 
-fn draw_circle(frame: &mut Mat, center: Point_<i32>) -> opencv::Result<()> {
-    let color = Scalar::new(0.0, 255.0, 0.0, 0.0);
-    let radius = 2;
-    circle(frame, center, radius, color, 1, 8, 0)?;
-	Ok(())
-}
 
 fn check_file(path: &String) -> Result<(), ()>{
 	if !Path::new(&path).exists() {
