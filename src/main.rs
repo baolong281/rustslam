@@ -47,19 +47,30 @@ fn main() {
 }
 
 fn process_frame(frame: &mut Mat, ext: &mut Extractor) -> opencv::Result<()> {
-	let mut img = Mat::default();
-	let (last_img, last_kps, last_desc) = ext.get_last();
+	
+	let (img_1, kps_1, _) = match ext.get_last() {
+		Some(f) => f,
+		None => {
+			ext.extract(frame.clone())?;
+			return Ok(());
+		}
+	};
 
-	ext.extract(frame.clone())
-		.unwrap_or_else(|e| {
-			println!("{}", e);
-			process::exit(1);
-		});
+	let (img_2, kps_2, matches) = ext.extract(frame.clone())?;
 
-	//features2d::draw_matches(last_img, last_kps, );
+	let keypoints = matches
+		.into_iter()
+		.map(|(x, y)| {
+			x
+		})
+		.collect();
 
-	opencv::highgui::imshow("rustslam", &img)?;
+	features2d::draw_keypoints(&frame.clone(), &keypoints, frame, Scalar::all(-1.0), features2d::DrawMatchesFlags::DEFAULT)?;
+
+	opencv::highgui::imshow("rustslam", frame)?;
 	opencv::highgui::wait_key(400)?;
+
+	//println!("{:?}", matches);
 	Ok(())
 }
 
