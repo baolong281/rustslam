@@ -1,5 +1,4 @@
-use opencv::core::*;
-use opencv::features2d;
+use opencv::{core::*, features2d, imgproc};
 use opencv::features2d:: {
 	ORB, ORB_ScoreType, BFMatcher
 };
@@ -14,14 +13,14 @@ struct LastData {
 pub struct Extractor {
 	orb: Box<dyn ORB>,
 	matcher: BFMatcher,
-	last: LastData,
+	last: Option<LastData>,
 }
 
 impl Extractor {
 	pub fn new() -> opencv::Result<Extractor>{
 
 		let orb = Box::new(<dyn ORB>::create(
-			2000,
+			3000,
 			1.,
 			8,
 			15,
@@ -33,39 +32,81 @@ impl Extractor {
 		)?);
 
 		let matcher = BFMatcher::new(NORM_L2, false)?;
-		let img = Mat::default();
-		let kps = Vector::default();
-		let desc = Mat::default();
 
-		Ok(Extractor { orb, matcher , last: LastData {img , kps, desc}})
+		Ok(Extractor { orb, matcher , last: None })
 	}
 
-	pub fn extract(&mut self, frame: Mat) -> opencv::Result<()> {
-		let mut orb_keypoints = Vector::default();
+	pub fn extract(&mut self, frame: Mat) -> opencv::Result<(Mat, Vector<KeyPoint>, Vec<(KeyPoint, KeyPoint)>)> {
+
+		//convert to grayscale and get features
+		let mut gray = Mat::default();
+		let mut feats = Mat::default();
+		imgproc::cvt_color(&frame, &mut gray, imgproc::COLOR_BGR2GRAY, 1)?;
+		imgproc::good_features_to_track(
+			&gray,
+			&mut feats,
+			3000,
+			0.01,
+			3.0,
+			&no_array(),
+			3,
+			false,
+			0.04)?;
+
+		//turn features mat into vector of keypoints
+		let mut kps = feats
+			.iter::<Point2f>()?
+			.map(|(_, point)| {
+				KeyPoint::new_point(point, 20., -1., 0., 0, -1).unwrap()
+			})
+			.collect::<Vector<KeyPoint>>();
+
+
+		//computing orbs
 		let mut orb_desc = Mat::default();
-		let mut dst_img = Mat::default();
 		let mask = Mat::default();
-		self.orb.detect_and_compute(&frame, &mask, &mut orb_keypoints, &mut orb_desc, false)?;
-		features2d::draw_keypoints(
-			&frame,
-			&orb_keypoints,
-			&mut dst_img,
-			VecN([0., 255., 0., 255.]),
-			features2d::DrawMatchesFlags::DEFAULT,
-		)?;
+		self.orb.compute(&gray, &mut kps, &mut orb_desc)?;
 
-		let mut knn: Vector<DMatch> = Vector::default();
+		let mut matches_vec= Vector::default();
+		let mut matches: Vec<(KeyPoint, KeyPoint)> = vec![];
 
-		self.matcher.train_match(&orb_desc, &self.last.desc, &mut knn, &mask)?;
-		self.last.img = frame;
-		self.last.kps = orb_keypoints;
-		self.last.desc = orb_desc;
+		//run the matche if last is some
+		if let Some(last) = &mut self.last {
+			self.matcher.knn_train_match(&last.desc, &orb_desc, &mut matches_vec, 2, &mask, false)?;
+			last.img = frame.clone();
+			last.kps = kps.clone();
+			last.desc = orb_desc.clone();
 
-		Ok(())
+			//convert vector of matches to tuples of both keypoints
+			matches = matches_vec 
+				.iter()
+				.filter(|m1| {
+					m1.get(0).unwrap().distance < m1.get(1).unwrap().distance * 0.75 
+				})
+				.filter(|m1| {
+					m1.get(0).unwrap().train_idx < kps.len() as i32 && m1.get(0).unwrap().query_idx < kps.len() as i32
+				})
+				.map(|x| {
+					(kps.get(x.get(0).unwrap().query_idx as usize).unwrap(),
+					last.kps.get(x.get(0).unwrap().train_idx as usize).unwrap()
+				)
+				})
+				.collect();
+		} else {
+			//declare last if last is none
+			self.last = Some(LastData {img: frame.clone(), kps: kps.clone(), desc: orb_desc.clone()});
+		}
+
+		Ok((frame, kps, matches))
 	}
 
-	pub fn get_last(&self) -> (&Mat, &Vector<KeyPoint>, &Mat) {
-		(&self.last.img, &self.last.kps, &self.last.desc)
+	pub fn get_last(&self) -> Option<(Mat, Vector<KeyPoint>, Mat)> {
+		match &self.last {
+			Some(last) => {
+				Some((last.img.clone(), last.kps.clone(), last.desc.clone()))
+			}
+			None => None
+		}
 	}
 }
 
