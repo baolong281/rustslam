@@ -1,29 +1,30 @@
 mod extractor;
 use extractor::Extractor;
 use opencv::core::*;
+use opencv::imgproc;
 use std::env;
 use std::process;
 use std::path::Path;
 use opencv::prelude::*;
-use opencv::features2d;
 use opencv::{videoio::{
-	VideoCapture, 
-	CAP_ANY}, };
+		VideoCapture, 
+		CAP_ANY}, };
 
 fn main() {
-	let path = env::args()
+	//read path 
+    let path = env::args()
 		.nth(1).unwrap_or_else(|| {
-			println!("Error: Missing required argument file path");
+		    println!("Error: Missing required argument file path");
 			process::exit(1);
 		});
 
+	//check if file exists
 	check_file(&path).unwrap_or_else(|_| {
-			println!("Error: File invalid or does not exist");
-			process::exit(1);
+		println!("Error: File invalid or does not exist");
+		process::exit(1);
 	});
 
 	let mut capture = VideoCapture::from_file(&path, CAP_ANY ).unwrap();
-
 	let mut frame = Mat::default();
 	let mut ext = Extractor::new().unwrap_or_else(|e| {
 		println!("{}", e);
@@ -42,24 +43,40 @@ fn main() {
 				process::exit(1);
 			});
 
-		}
+	}
 	process::exit(1); 
 }
 
 fn process_frame(frame: &mut Mat, ext: &mut Extractor) -> opencv::Result<()> {
-	let mut img = Mat::default();
-	let (last_img, last_kps, last_desc) = ext.get_last();
 
-	ext.extract(frame.clone())
-		.unwrap_or_else(|e| {
-			println!("{}", e);
-			process::exit(1);
+	match ext.check_last() {
+		Some(f) => f,
+		None => {
+			ext.extract(&frame)?;
+			return Ok(());
+		}
+	};
+	let matches = ext.extract(&frame)?;
+
+	matches.into_iter()
+		.for_each(|(u, v)| {
+			imgproc::line(
+				frame,
+				u,
+				v,
+				Scalar::new(255.0, 0.0, 0.0, 0.0),
+				2,
+				imgproc::LINE_8,
+				0
+			).unwrap();
+			imgproc::circle(frame, v, 3, Scalar::new(0.0, 255.0, 0.0, 0.0), 1, imgproc::LINE_8, 0).unwrap();
+			imgproc::circle(frame, u, 3, Scalar::new(0.0, 0.0, 255.0, 0.0), 1, imgproc::LINE_8, 0).unwrap();
 		});
 
-	//features2d::draw_matches(last_img, last_kps, );
+	opencv::highgui::imshow("rustslam", frame)?;
+	opencv::highgui::wait_key(1)?;
 
-	opencv::highgui::imshow("rustslam", &img)?;
-	opencv::highgui::wait_key(400)?;
+	//println!("{:?}", matches);
 	Ok(())
 }
 
