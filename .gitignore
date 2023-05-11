@@ -15,5 +15,8 @@ Cargo.lock
 
 
 # Added by cargo
-
 /target
+
+perf.data
+perf.data.old
+rustslam
