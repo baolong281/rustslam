@@ -3,12 +3,15 @@ use opencv::features2d:: {
     ORB, ORB_ScoreType, BFMatcher
 };
 use opencv::prelude::DescriptorMatcherConst;
+use rustslam::convert_to_f32;
+
 
 struct LastData {
     kps: Vector<KeyPoint>,
     desc: Mat,
 }
 
+#[allow(non_snake_case)]
 pub struct Extractor {
     orb: Box<dyn ORB>,
     matcher: BFMatcher,
@@ -17,10 +20,13 @@ pub struct Extractor {
     kps: Vector<KeyPoint>,
     mask: Mat,
     orb_desc: Mat,
+    K: Mat,
+    K_inv: Mat
 }
 
+#[allow(non_snake_case)]
 impl Extractor {
-    pub fn new() -> opencv::Result<Extractor>{
+    pub fn new(K: Mat) -> opencv::Result<Extractor>{
         let orb = Box::new(<dyn ORB>::create(
             3000,
             1.2, 
@@ -33,15 +39,25 @@ impl Extractor {
             20,
         )?);
 
-        let matcher = BFMatcher::new(NORM_L2, false)?;
+        //KEEP NORM TYPE ON NORM HAMMING FOR ORB
+        let matcher = BFMatcher::new(NORM_HAMMING, false)?;
         let gray = Mat::default();
         let kps= Vector::default();
         let mask = Mat::default();
         let orb_desc = Mat::default();
+        let K_inv = Extractor::get_k_inv(&K)?;
 
-        Ok(Extractor { orb, matcher , last: None, gray, kps, mask, orb_desc })
+        Ok(Extractor { orb, matcher , last: None, gray, kps, mask, orb_desc, K, K_inv })
    }
 
+   //get k_inv
+   fn get_k_inv(K: &Mat) -> opencv::Result<Mat> {
+        let mut K_inv = Mat::new_rows_cols_with_default(3, 3, CV_32F, Scalar::all(0.0))?;
+        invert(&K, &mut K_inv, DECOMP_LU)?;
+        Ok(K_inv)
+   }
+
+   //extract matches
     pub fn extract(&mut self, frame: &Mat) -> opencv::Result<Vec<(Point, Point)>> {
         //convert to grayscale and get features
         imgproc::cvt_color(frame, &mut self.gray, imgproc::COLOR_BGR2GRAY, 1)?;
@@ -50,14 +66,14 @@ impl Extractor {
         //computing descriptors 
         self.orb.compute(&self.gray, &mut self.kps, &mut self.orb_desc)?;
 
-        //run the matche if last is some
+        //get matches if last is some
         let mut matches: Vec<(Point, Point)> = vec![];
         if let Some(last) = &mut self.last {
             //get matches
             let mut matches_vec= Vector::default();
             self.matcher.knn_train_match(&self.orb_desc, &last.desc, &mut matches_vec, 2, &self.mask, false)?;
 
-            Extractor::filter_matches(&self.kps, last, &mut matches_vec, &mut matches)?;
+            Extractor::filter_matches(&self.kps, last, &mut matches_vec, &mut matches, &self.K_inv)?;
 
             println!("{:?} matches", matches.len());
             last.kps = self.kps.clone();
@@ -78,18 +94,40 @@ impl Extractor {
         }
     }
 
-    //filter bad matches && converts to points
-    fn filter_matches(kps: &Vector<KeyPoint>, last: &mut LastData, matches_vec: &mut Vector<Vector<DMatch>>, matches: &mut Vec<(Point, Point)>) -> opencv::Result<()> {
+    fn normalize_point(point: &mut Point, K_inv: &Mat) -> opencv::Result<()> {
+        let mut out = Mat::default();
 
-        if matches_vec.len() == 0 {
-            return Ok(());
-        }
+        //turn point into homogenous coordinate 3x1 vector
+        let point_mat = Mat::from_slice(&[point.x, point.y, 1])?.reshape(1, 3)?.to_owned();
+        let point_mat = convert_to_f32(&point_mat)?;
+
+        gemm(K_inv, &point_mat, 1.0, &Mat::default(), 0.0, &mut out, 0)?;
+        point.x = *out.at::<f32>(0)? as i32;
+        point.y = *out.at::<f32>(1)? as i32;
+        Ok(())
+    }
+
+    pub fn denormalize_point(&self, point: &mut Point_<i32>) -> opencv::Result<()> {
+        let mut out = Mat::default();
+
+        //turn point into homogenous coordinate 3x1 vector
+        let point_mat = Mat::from_slice(&[point.x, point.y, 1])?.reshape(1, 3)?.to_owned();
+        let point_mat = convert_to_f32(&point_mat)?;
+
+        gemm(&self.K, &point_mat, 1.0, &Mat::default(), 0.0, &mut out, 0)?;
+        point.x = *out.at::<f32>(0)? as i32;
+        point.y = *out.at::<f32>(1)? as i32;
+        Ok(())
+    }
+
+    //filter bad matches && converts to points
+    fn filter_matches(kps: &Vector<KeyPoint> ,last: &mut LastData, matches_vec: &mut Vector<Vector<DMatch>>, matches: &mut Vec<(Point, Point)>, K_inv: &Mat) -> opencv::Result<()> {
 
         *matches = matches_vec 
             .iter()
             .filter(|m1| {
                 //filter bad matches using distance
-                m1.get(0).unwrap().distance < m1.get(1).unwrap().distance * 0.60
+                m1.get(0).unwrap().distance < m1.get(1).unwrap().distance * 0.75
             })
             .map(|x| {
                 //maps into the keypoint
@@ -105,10 +143,21 @@ impl Extractor {
             .collect::<Vec<(Point, Point)>>();
 
         //RANSAC and matrix transform
-        let p1: Vector<Point> = Vector::from_iter(matches.iter().map(|(u, _)| *u));
-        let p2: Vector<Point> = Vector::from_iter(matches.iter().map(|(_, v)| *v));
+        let p1: Vector<Point> = Vector::from_iter(matches.iter().map(|(mut u, _)| {
+            Extractor::normalize_point(&mut u, K_inv).unwrap();
+            u
+        }));
+        let p2: Vector<Point> = Vector::from_iter(matches.iter().map(|(_, mut v)| {
+            Extractor::normalize_point(&mut v, K_inv).unwrap();
+            v
+        }));
         let mut inliners = Mat::default();
         let _ = calib3d::find_fundamental_mat(&p1, &p2, calib3d::RANSAC, 2.0, 0.999, 100, &mut inliners)?;
+
+        if inliners.rows() == 0 {
+            return Ok(())
+        }
+
         let inliners = inliners.to_vec_2d::<u8>()?
             .concat()
             .iter().
