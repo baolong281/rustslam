@@ -26,10 +26,12 @@ fn main() {
 
 	let mut capture = VideoCapture::from_file(&path, CAP_ANY ).unwrap();
 	let mut frame = Mat::default();
+	let mut out = Mat::default();
 	let mut ext = Extractor::new().unwrap_or_else(|e| {
 		println!("{}", e);
 		process::exit(1);
 	});
+	let res = Size_::new(1920, 1080);
 
 	loop {
 		capture.read(&mut frame).unwrap();
@@ -37,7 +39,9 @@ fn main() {
 				break;
 		}
 
-		process_frame(&mut frame, &mut ext)
+		imgproc::resize(&frame, &mut out, res, 0.0, 0.0, imgproc::INTER_LINEAR).unwrap_or_else(|_| println!("FORTNITE"));
+
+		process_frame(&mut out, &mut ext)
 			.unwrap_or_else(|e| {
 				println!("{}", e);
 				process::exit(1);
